@@ -1,0 +1,14 @@
+{
+  "eslint.workingDirectories": [{"mode": "auto"}],
+  "markdownlint.ignore": ["**/node_modules/**"],
+  "markdownlint.config": {
+    "default": false
+  },
+  "files.exclude": {
+    "**/node_modules": true
+  },
+  "search.exclude": {
+    "**/node_modules": true
+  },
+  "problems.decorations.enabled": false
+}
