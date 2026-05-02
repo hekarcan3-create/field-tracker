@@ -250,7 +250,7 @@ app.get('/api/location/history/:userId', auth, async (req, res) => {
       WHERE l.user_id = $1 AND s.date = $2
       ORDER BY l.timestamp ASC
     `, [userId, targetDate]);
-    
+
     // If no session-linked locations found, try to get any locations for this user on this date
     if (result.rows.length === 0) {
       const fallbackResult = await query(`
@@ -280,8 +280,11 @@ app.get('/api/employees', auth, async (req, res) => {
 
     const today = new Date().toISOString().split('T')[0];
     const enriched = await Promise.all(employees.map(async (emp) => {
+      // FIX: ORDER BY prioritises active session first, then most recent
+      // Without this an employee who ends+restarts their day shows as Offline
       const sessionResult = await query(
-        "SELECT * FROM sessions WHERE user_id = $1 AND date = $2",
+        `SELECT * FROM sessions WHERE user_id = $1 AND date = $2
+         ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, id DESC LIMIT 1`,
         [emp.id, today]
       );
       const lastLocResult = await query(
@@ -301,27 +304,27 @@ app.get('/api/employees', auth, async (req, res) => {
 app.put('/api/users/:id', auth, async (req, res) => {
   const userId = parseInt(req.params.id);
   const { name, email, department, phone } = req.body;
-  
+
   // Only manager can update other users
   if (req.user.role !== 'manager' && req.user.id !== userId) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
-  
+
   const updates = [];
   const params = [];
   let paramIndex = 1;
-  
+
   if (name) { updates.push(`name = $${paramIndex++}`); params.push(name); }
   if (email) { updates.push(`email = $${paramIndex++}`); params.push(email); }
   if (department !== undefined) { updates.push(`department = $${paramIndex++}`); params.push(department); }
   if (phone !== undefined) { updates.push(`phone = $${paramIndex++}`); params.push(phone); }
-  
+
   if (updates.length === 0) {
     return res.status(400).json({ error: 'No fields to update' });
   }
-  
+
   params.push(userId);
-  
+
   try {
     const result = await query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIndex}`, params);
     if (result.rowCount === 0) return res.status(404).json({ error: 'User not found' });
@@ -344,7 +347,7 @@ app.get('/api/activity/:userId', auth, async (req, res) => {
     let sql = 'SELECT * FROM activity_logs WHERE user_id = $1';
     const params = [userId];
     let paramIndex = 2;
-    
+
     if (date) {
       sql += ` AND DATE(timestamp) = $${paramIndex++}`;
       params.push(date);
@@ -392,14 +395,14 @@ app.get('/api/reports/summary', auth, async (req, res) => {
 
 app.delete('/api/employees/:id', auth, async (req, res) => {
   if (req.user.role !== 'manager') return res.status(403).json({ error: 'Manager only' });
-  
+
   try {
     // End any active sessions for this employee before deleting
     await query(
       "UPDATE sessions SET status = 'completed', end_time = $1 WHERE user_id = $2 AND status = 'active'",
       [new Date().toISOString(), req.params.id]
     );
-    
+
     const result = await query('DELETE FROM users WHERE id = $1 AND role = $2', [req.params.id, 'employee']);
     if (result.rowCount === 0) return res.status(404).json({ error: 'Employee not found' });
     res.json({ success: true });

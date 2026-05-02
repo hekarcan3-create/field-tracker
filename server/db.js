@@ -1,34 +1,42 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// PostgreSQL connection pool
-const pool = new Pool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'fieldtracker',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'password',
-  max: 20, // maximum number of clients in the pool
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-});
+// Support both a full DATABASE_URL (Render/Neon/Railway)
+// and individual vars (Supabase style)
+const pool = process.env.DATABASE_URL
+  ? new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }, // required for Supabase / Neon / Render
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+  })
+  : new Pool({
+    host: process.env.DB_HOST,
+    port: parseInt(process.env.DB_PORT) || 5432,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    ssl: { rejectUnauthorized: false }, // required for Supabase
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000,
+  });
 
-// Test connection
 pool.on('connect', () => {
   console.log('✅ Connected to PostgreSQL');
 });
 
 pool.on('error', (err) => {
-  console.error('❌ PostgreSQL error:', err);
+  console.error('❌ PostgreSQL pool error:', err.message);
 });
 
-// Helper function to run queries
+// Simple query helper
 const query = (text, params) => pool.query(text, params);
 
-// Initialize database tables
+// Initialize all tables + indexes
 const initDB = async () => {
   try {
-    // Users table
     await query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -43,7 +51,6 @@ const initDB = async () => {
       )
     `);
 
-    // Sessions table
     await query(`
       CREATE TABLE IF NOT EXISTS sessions (
         id SERIAL PRIMARY KEY,
@@ -55,7 +62,6 @@ const initDB = async () => {
       )
     `);
 
-    // Locations table
     await query(`
       CREATE TABLE IF NOT EXISTS locations (
         id SERIAL PRIMARY KEY,
@@ -63,15 +69,14 @@ const initDB = async () => {
         session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         lat DECIMAL(10, 8) NOT NULL,
         lng DECIMAL(11, 8) NOT NULL,
-        accuracy DECIMAL(10, 2),
-        speed DECIMAL(10, 2),
-        heading DECIMAL(10, 2),
+        accuracy DECIMAL(10, 2) DEFAULT 0,
+        speed DECIMAL(10, 2) DEFAULT 0,
+        heading DECIMAL(10, 2) DEFAULT 0,
         address TEXT DEFAULT '',
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
-    // Activity logs table
     await query(`
       CREATE TABLE IF NOT EXISTS activity_logs (
         id SERIAL PRIMARY KEY,
@@ -85,60 +90,21 @@ const initDB = async () => {
       )
     `);
 
-    // Create indexes for better performance
-    await query(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`);
-    await query(`CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date)`);
+    // Indexes for performance
+    await query(`CREATE INDEX IF NOT EXISTS idx_sessions_user_date ON sessions(user_id, date)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_locations_user_id ON locations(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_locations_session_id ON locations(session_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_locations_timestamp ON locations(timestamp)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_activity_logs_user_id ON activity_logs(user_id)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)`);
 
-    console.log('✅ PostgreSQL tables initialized');
+    console.log('✅ PostgreSQL tables ready');
   } catch (err) {
-    console.error('❌ Failed to initialize database:', err);
+    console.error('❌ Failed to initialize database:', err.message);
     throw err;
   }
 };
 
-// Get database instance for compatibility with old code
-const getDB = () => {
-  return {
-    query,
-    // For backward compatibility with SQLite-style callbacks
-    run: async (sql, params = [], callback) => {
-      try {
-        const result = await query(sql, params);
-        if (callback) callback(null, result);
-        return result;
-      } catch (err) {
-        if (callback) callback(err);
-        throw err;
-      }
-    },
-    get: async (sql, params = [], callback) => {
-      try {
-        const result = await query(sql, params);
-        const row = result.rows[0] || null;
-        if (callback) callback(null, row);
-        return row;
-      } catch (err) {
-        if (callback) callback(err);
-        throw err;
-      }
-    },
-    all: async (sql, params = [], callback) => {
-      try {
-        const result = await query(sql, params);
-        const rows = result.rows;
-        if (callback) callback(null, rows);
-        return rows;
-      } catch (err) {
-        if (callback) callback(err);
-        throw err;
-      }
-    }
-  };
-};
-
-module.exports = { pool, query, initDB, getDB };
+module.exports = { pool, query, initDB };
