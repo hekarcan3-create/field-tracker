@@ -1,0 +1,16 @@
+{
+  "short_name": "Field Tracker",
+  "name": "Avail Co. Field Tracker",
+  "description": "Real-time GPS tracking for field employees",
+  "icons": [
+    {
+      "src": "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0a0e1a",
+  "background_color": "#0a0e1a"
+}

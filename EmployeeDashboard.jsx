@@ -37,6 +37,41 @@ export default function EmployeeDashboard() {
   const [tab, setTab] = useState('map');
   const watchId = useRef(null);
   const timerRef = useRef(null);
+  const wakeLock = useRef(null);
+
+  // Wake Lock API logic
+  const requestWakeLock = async () => {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      if (wakeLock.current) return;
+      wakeLock.current = await navigator.wakeLock.request('screen');
+      console.log('☀️ Wake Lock is active');
+      wakeLock.current.addEventListener('release', () => {
+        console.log('🌑 Wake Lock was released');
+        wakeLock.current = null;
+      });
+    } catch (err) {
+      console.error(`Wake Lock Error: ${err.name}, ${err.message}`);
+    }
+  };
+
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLock.current) {
+      wakeLock.current.release();
+      wakeLock.current = null;
+    }
+  }, []);
+
+  // Re-acquire wake lock when page becomes visible again
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (tracking && document.visibilityState === 'visible') {
+        await requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [tracking]);
 
   // Check permission state and request if needed
   const checkAndRequestPermission = async () => {
@@ -92,6 +127,7 @@ export default function EmployeeDashboard() {
         const hasPermission = await checkAndRequestPermission();
         if (hasPermission) {
           startGPS(res.data.session.id);
+          requestWakeLock();
         }
       }
     } catch (err) {
@@ -212,7 +248,11 @@ export default function EmployeeDashboard() {
           ...prev.slice(0, 49)
         ]);
       },
-      { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
+      { 
+        enableHighAccuracy: true, 
+        maximumAge: 0, 
+        timeout: 30000 
+      }
     );
   }, []);
 
@@ -261,6 +301,7 @@ export default function EmployeeDashboard() {
       // Only start GPS watch if permission was granted
       if (hasPermission) {
         startGPS(res.data.session.id);
+        requestWakeLock();
       }
       
       const entry = { time: format(new Date(), 'HH:mm:ss'), msg: '✅ Work day started — tracking enabled', type: 'system' };
@@ -277,6 +318,7 @@ export default function EmployeeDashboard() {
       await axios.post('/api/session/end');
       if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
       if (timerRef.current) clearInterval(timerRef.current);
+      releaseWakeLock();
       setTracking(false);
       setSession(null);
       setStatus('idle');
@@ -435,6 +477,26 @@ export default function EmployeeDashboard() {
           </div>
         )}
 
+        {/* Background Tracking Guide */}
+        {tracking && (
+          <div style={styles.guideBox}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              Keep Tracking in Background
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text2)', lineHeight: 1.5 }}>
+              To ensure the system tracks you even when the screen is off:
+              <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                <li>Keep this tab open in your browser.</li>
+                <li>Do not force-close the browser app.</li>
+                <li>On Android: Set battery usage to <b>"Unrestricted"</b> for your browser.</li>
+              </ul>
+            </div>
+          </div>
+        )}
+
         {/* Point count banner */}
         {tracking && positions.length > 0 && (
           <div style={styles.pointsBanner}>
@@ -555,4 +617,5 @@ const styles = {
   activityTime: { fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--accent)', flexShrink: 0, marginTop: 1, minWidth: '50px' },
   activityMsg: { fontSize: 12, color: 'var(--text2)', wordBreak: 'break-word' },
   empty: { color: 'var(--text2)', fontSize: 12, textAlign: 'center', padding: '30px 0' },
+  guideBox: { background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 10, padding: '12px 14px' },
 };
