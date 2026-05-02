@@ -38,6 +38,41 @@ export default function EmployeeDashboard() {
   const watchId = useRef(null);
   const timerRef = useRef(null);
   const wakeLock = useRef(null);
+  const audioContextRef = useRef(null);
+
+  // Silent Heartbeat for iOS/Android background persistence
+  const startHeartbeat = () => {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContextClass();
+      }
+      
+      const ctx = audioContextRef.current;
+      // If suspended (common in browsers), resume it
+      if (ctx.state === 'suspended') ctx.resume();
+
+      // Create a 1-second silent buffer
+      const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      source.connect(ctx.destination);
+      source.start();
+      console.log('🔊 Silent heartbeat active (OS keep-alive)');
+    } catch (e) {
+      console.error('Heartbeat failed:', e);
+    }
+  };
+
+  const stopHeartbeat = () => {
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+  };
 
   // Wake Lock API logic
   const requestWakeLock = async () => {
@@ -128,6 +163,7 @@ export default function EmployeeDashboard() {
         if (hasPermission) {
           startGPS(res.data.session.id);
           requestWakeLock();
+          startHeartbeat();
         }
       }
     } catch (err) {
@@ -302,6 +338,7 @@ export default function EmployeeDashboard() {
       if (hasPermission) {
         startGPS(res.data.session.id);
         requestWakeLock();
+        startHeartbeat();
       }
       
       const entry = { time: format(new Date(), 'HH:mm:ss'), msg: '✅ Work day started — tracking enabled', type: 'system' };
@@ -319,6 +356,7 @@ export default function EmployeeDashboard() {
       if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
       if (timerRef.current) clearInterval(timerRef.current);
       releaseWakeLock();
+      stopHeartbeat();
       setTracking(false);
       setSession(null);
       setStatus('idle');
