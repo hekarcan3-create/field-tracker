@@ -54,6 +54,13 @@ export default function EmployeeDashboard() {
       // If suspended (common in browsers), resume it
       if (ctx.state === 'suspended') ctx.resume();
 
+      // Resilience: Auto-resume if OS suspends it (like during a call)
+      ctx.onstatechange = () => {
+        if (ctx.state === 'suspended' && tracking) {
+          ctx.resume().catch(() => {});
+        }
+      };
+
       // Create a 1-second silent buffer
       const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
       const source = ctx.createBufferSource();
@@ -61,7 +68,7 @@ export default function EmployeeDashboard() {
       source.loop = true;
       source.connect(ctx.destination);
       source.start();
-      console.log('🔊 Silent heartbeat active (OS keep-alive)');
+      console.log('🔊 Call-proof heartbeat active');
     } catch (e) {
       console.error('Heartbeat failed:', e);
     }
@@ -69,6 +76,8 @@ export default function EmployeeDashboard() {
 
   const stopHeartbeat = () => {
     if (audioContextRef.current) {
+      // Remove listener before closing
+      audioContextRef.current.onstatechange = null;
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
@@ -97,11 +106,14 @@ export default function EmployeeDashboard() {
     }
   }, []);
 
-  // Re-acquire wake lock when page becomes visible again
+  // Resilience: Re-acquire everything when app returns to foreground
   useEffect(() => {
     const handleVisibilityChange = async () => {
       if (tracking && document.visibilityState === 'visible') {
+        console.log('🔄 App returned to foreground - refreshing tracking services...');
         await requestWakeLock();
+        startHeartbeat();
+        // If GPS is stuck, this will be handled by the watchPosition options
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -271,14 +283,22 @@ export default function EmployeeDashboard() {
         }
       },
       (err) => {
+        console.warn(`GPS Watch Error (${err.code}): ${err.message}`);
         if (err.code === 1) {
-          // PERMISSION_DENIED
           setStatus('denied');
         } else if (err.code === 2) {
           setStatus('unavailable');
         } else {
           setStatus('timeout');
         }
+        
+        // Resilience: If timeout occurs, the watch might have been dropped by OS
+        // We'll try to restart it once if we are still in a tracking session
+        if (err.code === 3 && tracking) {
+          console.log('🛰️ GPS Timeout - Attempting to restart watch...');
+          retryGPS();
+        }
+
         setActivityLog(prev => [
           { time: format(new Date(), 'HH:mm:ss'), msg: `⚠️ GPS error: ${err.message}`, type: 'error' },
           ...prev.slice(0, 49)
