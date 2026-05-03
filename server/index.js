@@ -214,6 +214,37 @@ app.post('/api/location', auth, async (req, res) => {
   }
 });
 
+// ─── GPS Gap Logging ───────────────────────────────────────────────
+// Called by the employee app when GPS goes silent >3 min (backgrounded)
+// or when it resumes. Lets the manager see exactly when tracking was lost.
+app.post('/api/location/gap', auth, async (req, res) => {
+  const { session_id, gap_type, duration_seconds } = req.body;
+  if (!session_id) return res.status(400).json({ error: 'session_id required' });
+  try {
+    const description = gap_type === 'lost'
+      ? `📵 GPS tracking paused — employee likely left the app`
+      : `🔄 GPS tracking resumed after ${Math.round((duration_seconds || 0) / 60)} min gap`;
+
+    await query(
+      "INSERT INTO activity_logs (user_id, session_id, type, description) VALUES ($1, $2, $3, $4)",
+      [req.user.id, session_id, `gps_${gap_type}`, description]
+    );
+
+    io.emit('gps_gap', {
+      userId: req.user.id,
+      name: req.user.name,
+      gap_type,
+      duration_seconds,
+      timestamp: new Date().toISOString()
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Gap log error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 app.get('/api/location/live', auth, async (req, res) => {
   if (req.user.role !== 'manager') return res.status(403).json({ error: 'Manager only' });
   try {
@@ -291,7 +322,27 @@ app.get('/api/employees', auth, async (req, res) => {
         "SELECT * FROM locations WHERE user_id = $1 ORDER BY id DESC LIMIT 1",
         [emp.id]
       );
-      return { ...emp, todaySession: sessionResult.rows[0] || null, lastLocation: lastLocResult.rows[0] || null };
+
+      // Check if there is an unresolved GPS gap today (lost but not yet resumed)
+      const lastGapResult = await query(`
+        SELECT * FROM activity_logs
+        WHERE user_id = $1
+          AND type IN ('gps_lost', 'gps_resumed')
+          AND DATE(timestamp) = $2
+        ORDER BY timestamp DESC LIMIT 1
+      `, [emp.id, today]);
+
+      const lastGapEntry = lastGapResult.rows[0];
+      const gpsGapActive = lastGapEntry?.type === 'gps_lost';
+      const gpsGapSince = gpsGapActive ? lastGapEntry.timestamp : null;
+
+      return {
+        ...emp,
+        todaySession: sessionResult.rows[0] || null,
+        lastLocation: lastLocResult.rows[0] || null,
+        gpsGapActive,
+        gpsGapSince
+      };
     }));
     res.json(enriched);
   } catch (err) {

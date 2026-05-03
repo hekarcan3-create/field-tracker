@@ -56,24 +56,28 @@ export default function EmployeeDashboard() {
   const wakeLock = useRef(null);
   const audioContextRef = useRef(null);
   const audioSourceRef = useRef(null);
+  const swRef = useRef(null);           // ServiceWorker registration
+  const pollIntervalRef = useRef(null); // Secondary GPS poll (fallback when watchPosition dies in bg)
+  const gapStartRef = useRef(null);     // Timestamp when GPS went silent (for gap reporting)
+  const sessionIdRef = useRef(null);    // Keep session id accessible inside SW message callbacks
 
   // Silent Heartbeat for iOS/Android background persistence
   const startHeartbeat = () => {
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return;
-      
+
       if (!audioContextRef.current) {
         audioContextRef.current = new AudioContextClass();
       }
-      
+
       const ctx = audioContextRef.current;
       if (ctx.state === 'suspended') ctx.resume();
 
       // Resilience: Auto-resume if OS suspends it
       ctx.onstatechange = () => {
         if (ctx.state === 'suspended' && tracking) {
-          ctx.resume().catch(() => {});
+          ctx.resume().catch(() => { });
         }
       };
 
@@ -96,10 +100,10 @@ export default function EmployeeDashboard() {
             { src: '/icon.png', sizes: '512x512', type: 'image/png' }
           ]
         });
-        
+
         // Handle playback state to satisfy OS
         navigator.mediaSession.playbackState = 'playing';
-        
+
         // Add dummy handlers to prevent OS from stopping playback
         navigator.mediaSession.setActionHandler('play', () => {
           if (audioContextRef.current?.state === 'suspended') audioContextRef.current.resume();
@@ -118,7 +122,7 @@ export default function EmployeeDashboard() {
 
   const stopHeartbeat = () => {
     if (audioSourceRef.current) {
-      try { audioSourceRef.current.stop(); } catch {}
+      try { audioSourceRef.current.stop(); } catch { }
       audioSourceRef.current = null;
     }
     if (audioContextRef.current) {
@@ -158,15 +162,103 @@ export default function EmployeeDashboard() {
   useEffect(() => {
     const handleVisibilityChange = async () => {
       if (tracking && document.visibilityState === 'visible') {
-        console.log('🔄 App returned to foreground - refreshing tracking services...');
+        console.log('🔄 App returned to foreground — refreshing tracking...');
         await requestWakeLock();
         startHeartbeat();
-        // If GPS is stuck, this will be handled by the watchPosition options
+
+        // Immediately get a fresh fix — don't wait for watchPosition to wake up
+        const sid = sessionIdRef.current;
+        if (sid) {
+          navigator.geolocation.getCurrentPosition(
+            async (pos) => {
+              const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
+              lastUpdateRef.current = Date.now();
+
+              if (gapStartRef.current) {
+                const gapSec = Math.round((Date.now() - gapStartRef.current) / 1000);
+                gapStartRef.current = null;
+                try { await axios.post('/api/location/gap', { session_id: sid, gap_type: 'resumed', duration_seconds: gapSec }); } catch { }
+              }
+
+              setCurrentPos([lat, lng]);
+              setPositions(prev => [...prev, [lat, lng]]);
+              setStatus('active');
+              try {
+                await axios.post('/api/location', { lat, lng, accuracy: accuracy || 0, speed: speed || 0, heading: heading || 0, session_id: sid });
+              } catch { }
+            },
+            () => { },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+          );
+        }
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [tracking]);
+
+  // ── Sync session id into ref so SW message handler can access it ──
+  useEffect(() => {
+    sessionIdRef.current = session?.id || null;
+    if (session?.id && swRef.current?.active) {
+      swRef.current.active.postMessage({ type: 'START_HEARTBEAT' });
+    }
+  }, [session]);
+
+  // ── Register Service Worker & listen for background wake-up msgs ──
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .then(async (reg) => {
+        swRef.current = reg;
+        console.log('✅ SW registered');
+        // Register periodic background sync if the browser supports it (Chrome Android)
+        if ('periodicSync' in reg) {
+          try {
+            const perm = await navigator.permissions.query({ name: 'periodic-background-sync' });
+            if (perm.state === 'granted') {
+              await reg.periodicSync.register('gps-heartbeat', { minInterval: 60_000 });
+              console.log('✅ Periodic Background Sync registered');
+            }
+          } catch { /* not supported, SW internal timer handles it */ }
+        }
+      })
+      .catch(err => console.warn('SW registration failed:', err));
+
+    // The SW sends SW_GET_LOCATION when it wakes up in the background.
+    // We respond by getting a fresh GPS fix and POSTing it to the server.
+    const handleSWMessage = async (event) => {
+      if (event.data?.type !== 'SW_GET_LOCATION') return;
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
+          lastUpdateRef.current = Date.now();
+
+          if (gapStartRef.current) {
+            const gapSec = Math.round((Date.now() - gapStartRef.current) / 1000);
+            gapStartRef.current = null;
+            try { await axios.post('/api/location/gap', { session_id: sid, gap_type: 'resumed', duration_seconds: gapSec }); } catch { }
+          }
+
+          setCurrentPos([lat, lng]);
+          setPositions(prev => [...prev, [lat, lng]]);
+          setStatus('active');
+          try {
+            await axios.post('/api/location', { lat, lng, accuracy: accuracy || 0, speed: speed || 0, heading: heading || 0, session_id: sid });
+          } catch { }
+        },
+        (err) => console.warn('SW-triggered GPS fail:', err.message),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+      );
+    };
+
+    navigator.serviceWorker.addEventListener('message', handleSWMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check permission state and request if needed
   const checkAndRequestPermission = async () => {
@@ -174,7 +266,7 @@ export default function EmployeeDashboard() {
       setStatus('unsupported');
       return false;
     }
-    
+
     // Try to trigger permission prompt by requesting one-time position
     return new Promise((resolve) => {
       navigator.geolocation.getCurrentPosition(
@@ -203,6 +295,7 @@ export default function EmployeeDashboard() {
       if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
       if (timerRef.current) clearInterval(timerRef.current);
       if (watchdogId.current) clearInterval(watchdogId.current);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     };
   }, []);
 
@@ -218,12 +311,13 @@ export default function EmployeeDashboard() {
         startTimer(new Date(startTime));
         await loadHistory();
         await loadActivityFromServer();
-        
+
         // Check GPS permission when resuming session
         const hasPermission = await checkAndRequestPermission();
         if (hasPermission) {
           startGPS(res.data.session.id);
           startWatchdog(res.data.session.id);
+          startSecondaryPoll(res.data.session.id);
           requestWakeLock();
           startHeartbeat();
         }
@@ -244,13 +338,13 @@ export default function EmployeeDashboard() {
           msg: item.type === 'check_in'
             ? '✅ Work day started — tracking enabled'
             : item.type === 'check_out'
-            ? '🏁 Work day ended'
-            : `📍 Location recorded`,
+              ? '🏁 Work day ended'
+              : `📍 Location recorded`,
           type: item.type === 'check_in' || item.type === 'check_out' ? 'system' : 'location'
         }));
         setActivityLog(logs);
       }
-    } catch {}
+    } catch { }
   };
 
   const loadHistory = async () => {
@@ -260,7 +354,7 @@ export default function EmployeeDashboard() {
       const pts = res.data.map(l => [l.lat, l.lng]);
       setPositions(pts);
       if (pts.length) setCurrentPos(pts[pts.length - 1]);
-    } catch {}
+    } catch { }
   };
 
   const startTimer = (startTime) => {
@@ -271,8 +365,8 @@ export default function EmployeeDashboard() {
       start = startTime;
     } else {
       // PostgreSQL returns timestamp without timezone, treat as UTC by appending Z
-      const timeStr = typeof startTime === 'string' && !startTime.endsWith('Z') 
-        ? startTime + 'Z' 
+      const timeStr = typeof startTime === 'string' && !startTime.endsWith('Z')
+        ? startTime + 'Z'
         : startTime;
       start = new Date(timeStr);
     }
@@ -283,9 +377,52 @@ export default function EmployeeDashboard() {
       const h = Math.floor(diff / 3600000);
       const m = Math.floor((diff % 3600000) / 60000);
       const s = Math.floor((diff % 60000) / 1000);
-      setElapsed(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`);
+      setElapsed(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`);
     }, 1000);
   };
+
+  // ── Secondary GPS polling loop ─────────────────────────────────────
+  // watchPosition gets killed by mobile OSes when the app is backgrounded.
+  // This secondary loop calls getCurrentPosition every 30 seconds as a
+  // fallback. It only fires when watchPosition hasn't reported in 25s,
+  // so it doesn't double-send when watchPosition is working normally.
+  const startSecondaryPoll = useCallback((sessionId) => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+
+    pollIntervalRef.current = setInterval(() => {
+      const stale = Date.now() - lastUpdateRef.current > 25_000;
+      if (!stale) return; // watchPosition is alive, skip
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
+          lastUpdateRef.current = Date.now();
+
+          if (gapStartRef.current) {
+            const gapSec = Math.round((Date.now() - gapStartRef.current) / 1000);
+            gapStartRef.current = null;
+            try { await axios.post('/api/location/gap', { session_id: sessionId, gap_type: 'resumed', duration_seconds: gapSec }); } catch { }
+          }
+
+          setCurrentPos([lat, lng]);
+          setPositions(prev => [...prev, [lat, lng]]);
+          setStatus('active');
+          try {
+            await axios.post('/api/location', {
+              lat, lng, accuracy: accuracy || 0, speed: speed || 0, heading: heading || 0, session_id: sessionId
+            });
+            const time = format(new Date(), 'HH:mm:ss');
+            setActivityLog(prev => [
+              { time, msg: `📍 Location recorded — ${parseFloat(lat).toFixed(5)}, ${parseFloat(lng).toFixed(5)}`, type: 'location' },
+              ...prev.slice(0, 49)
+            ]);
+          } catch { }
+        },
+        (err) => console.warn('Secondary poll failed:', err.message),
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 20000 }
+      );
+    }, 30_000); // every 30 seconds
+  }, []);
 
   const startGPS = useCallback((sessionId) => {
     if (!navigator.geolocation) {
@@ -342,7 +479,7 @@ export default function EmployeeDashboard() {
         } else {
           setStatus('timeout');
         }
-        
+
         // Resilience: If timeout occurs, the watch might have been dropped by OS
         // We'll try to restart it once if we are still in a tracking session
         if (err.code === 3 && tracking) {
@@ -355,34 +492,44 @@ export default function EmployeeDashboard() {
           ...prev.slice(0, 49)
         ]);
       },
-      { 
-        enableHighAccuracy: true, 
-        maximumAge: 0, 
-        timeout: 30000 
+      {
+        enableHighAccuracy: true,
+        maximumAge: 0,
+        timeout: 30000
       }
     );
   }, [tracking]);
 
   const startWatchdog = (sessionId) => {
     if (watchdogId.current) clearInterval(watchdogId.current);
-    
-    // Check every 2 minutes if we got an update
-    watchdogId.current = setInterval(() => {
+
+    watchdogId.current = setInterval(async () => {
       const timeSinceLast = Date.now() - lastUpdateRef.current;
-      
-      // If no update for 3 minutes, force a position check to wake up the sensor
-      if (timeSinceLast > 180000 && tracking) {
-        console.log('🐕 GPS Watchdog: No updates for 3 mins, waking up sensor...');
+
+      if (timeSinceLast > 180_000) {
+        console.log(`🐕 GPS gap: no update for ${Math.round(timeSinceLast / 60000)} min`);
+
+        // Log gap to server once (not on every watchdog tick)
+        if (!gapStartRef.current) {
+          gapStartRef.current = lastUpdateRef.current;
+          try {
+            await axios.post('/api/location/gap', { session_id: sessionId, gap_type: 'lost' });
+          } catch { }
+        }
+
+        // Try to wake the GPS sensor directly
         navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            console.log('🐕 Watchdog: Sensor woke up!', pos.coords.latitude, pos.coords.longitude);
-            // This might trigger a fresh update in the watchPosition as well
-          },
-          (err) => console.warn('🐕 Watchdog wake up failed:', err.message),
+          () => { console.log('🐕 Watchdog: sensor woke'); },
+          (err) => { console.warn('🐕 Watchdog wake fail:', err.message); },
           { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
         );
+
+        // Nudge the Service Worker to also try from its process
+        if (swRef.current?.active) {
+          swRef.current.active.postMessage({ type: 'START_HEARTBEAT' });
+        }
       }
-    }, 120000);
+    }, 120_000); // check every 2 minutes
   };
 
   const retryGPS = async () => {
@@ -399,13 +546,13 @@ export default function EmployeeDashboard() {
     // First check/request GPS permission before starting session
     setStatus('locating');
     const hasPermission = await checkAndRequestPermission();
-    
+
     if (!hasPermission) {
       console.log('[Employee] GPS permission not granted, but allowing session start');
     } else {
       console.log('[Employee] GPS permission granted');
     }
-    
+
     try {
       const res = await axios.post('/api/session/start');
       console.log('[Employee] Session started:', res.data);
@@ -414,15 +561,15 @@ export default function EmployeeDashboard() {
       const startTime = res.data.session.start_time;
       console.log('[Employee] New session start_time:', startTime, 'Now:', new Date(), 'Parsed:', new Date(startTime));
       startTimer(new Date(startTime));
-      
-      // Only start GPS watch if permission was granted
+
       if (hasPermission) {
         startGPS(res.data.session.id);
         startWatchdog(res.data.session.id);
+        startSecondaryPoll(res.data.session.id);
         requestWakeLock();
         startHeartbeat();
       }
-      
+
       const entry = { time: format(new Date(), 'HH:mm:ss'), msg: '✅ Work day started — tracking enabled', type: 'system' };
       setActivityLog([entry]);
     } catch (e) {
@@ -438,8 +585,11 @@ export default function EmployeeDashboard() {
       if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
       if (timerRef.current) clearInterval(timerRef.current);
       if (watchdogId.current) clearInterval(watchdogId.current);
+      if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
+      gapStartRef.current = null;
       releaseWakeLock();
       stopHeartbeat();
+      if (swRef.current?.active) swRef.current.active.postMessage({ type: 'STOP_HEARTBEAT' });
       setTracking(false);
       setSession(null);
       setStatus('idle');
@@ -448,7 +598,7 @@ export default function EmployeeDashboard() {
         { time: format(new Date(), 'HH:mm:ss'), msg: '🏁 Work day ended', type: 'system' },
         ...prev
       ]);
-    } catch {}
+    } catch { }
   };
 
   const mapCenter = currentPos || DEFAULT_CENTER;
@@ -460,8 +610,8 @@ export default function EmployeeDashboard() {
         <div style={styles.headerLeft}>
           <div style={styles.logoMark}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-              <circle cx="12" cy="9" r="2.5"/>
+              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
+              <circle cx="12" cy="9" r="2.5" />
             </svg>
           </div>
           <div>
@@ -477,12 +627,12 @@ export default function EmployeeDashboard() {
           >
             {theme === 'dark' ? (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="5"/>
-                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
               </svg>
             ) : (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
               </svg>
             )}
           </button>
@@ -517,30 +667,30 @@ export default function EmployeeDashboard() {
                   ...styles.gpsDot,
                   background: status === 'active' ? 'var(--success)'
                     : status === 'locating' ? 'var(--warning)'
-                    : 'var(--danger)'
+                      : 'var(--danger)'
                 }} className={status === 'locating' ? 'animate-pulse' : ''} />
                 <span style={{ fontSize: 11 }}>
                   {status === 'active' ? 'GPS Active'
                     : status === 'locating' ? 'Acquiring GPS…'
-                    : status === 'denied' ? 'Location blocked'
-                    : status === 'unavailable' ? 'GPS unavailable'
-                    : status === 'timeout' ? 'GPS timeout'
-                    : status === 'unsupported' ? 'GPS not supported'
-                    : 'GPS error'}
+                      : status === 'denied' ? 'Location blocked'
+                        : status === 'unavailable' ? 'GPS unavailable'
+                          : status === 'timeout' ? 'GPS timeout'
+                            : status === 'unsupported' ? 'GPS not supported'
+                              : 'GPS error'}
                 </span>
               </div>
             )}
             {!tracking ? (
               <button className="btn btn-primary btn-lg" onClick={handleStartDay}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <circle cx="12" cy="12" r="10"/><polyline points="12 8 16 12 12 16"/><line x1="8" y1="12" x2="16" y2="12"/>
+                  <circle cx="12" cy="12" r="10" /><polyline points="12 8 16 12 12 16" /><line x1="8" y1="12" x2="16" y2="12" />
                 </svg>
                 Start Work Day
               </button>
             ) : (
               <button className="btn btn-danger" onClick={handleEndDay}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
                 </svg>
                 End Work Day
               </button>
@@ -590,7 +740,7 @@ export default function EmployeeDashboard() {
             {status !== 'unsupported' && (
               <button className="btn btn-primary" style={{ marginTop: 16, alignSelf: 'flex-start', padding: '10px 20px' }} onClick={retryGPS}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 6 }}>
-                  <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                  <polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
                 </svg>
                 Retry GPS
               </button>
@@ -603,7 +753,7 @@ export default function EmployeeDashboard() {
           <div style={styles.guideBox}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
               </svg>
               Keep Tracking in Background
             </div>
@@ -645,8 +795,8 @@ export default function EmployeeDashboard() {
                 <Marker position={currentPos} icon={myIcon}>
                   <Popup>
                     <div style={{ fontFamily: 'var(--font)', padding: 4 }}>
-                      <strong style={{ color: 'var(--accent)' }}>{user?.name}</strong><br/>
-                      <small style={{ color: 'var(--text2)' }}>Current Position</small><br/>
+                      <strong style={{ color: 'var(--accent)' }}>{user?.name}</strong><br />
+                      <small style={{ color: 'var(--text2)' }}>Current Position</small><br />
                       <small>{parseFloat(currentPos[0]).toFixed(5)}, {parseFloat(currentPos[1]).toFixed(5)}</small>
                     </div>
                   </Popup>

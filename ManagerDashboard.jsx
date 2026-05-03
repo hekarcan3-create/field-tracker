@@ -103,6 +103,15 @@ export default function ManagerDashboard() {
       addNotification(`${data.name} ended their work day`, 'check_out');
       loadData();
     });
+    socketRef.current.on('gps_gap', (data) => {
+      if (data.gap_type === 'lost') {
+        addNotification(`📵 ${data.name} — GPS tracking lost (left the app)`, 'gps_lost');
+      } else {
+        const mins = Math.round((data.duration_seconds || 0) / 60);
+        addNotification(`🔄 ${data.name} — GPS resumed after ${mins} min gap`, 'gps_resumed');
+      }
+      loadData(); // refresh employee list so gpsGapActive updates
+    });
 
     // Refresh live locations every 15 seconds
     const interval = setInterval(loadLive, 15000);
@@ -166,7 +175,7 @@ export default function ManagerDashboard() {
     try {
       const res = await axios.get(`/api/location/history/${userId}?date=${date}`);
       setRouteHistory(res.data);
-    } catch {}
+    } catch { }
   };
 
   const handleSelectEmployee = (emp) => {
@@ -183,8 +192,8 @@ export default function ManagerDashboard() {
         <div style={styles.headerLeft}>
           <div style={styles.logoMark}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-              <circle cx="12" cy="9" r="2.5"/>
+              <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" />
+              <circle cx="12" cy="9" r="2.5" />
             </svg>
           </div>
           <div>
@@ -209,12 +218,12 @@ export default function ManagerDashboard() {
           >
             {theme === 'dark' ? (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="5"/>
-                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                <circle cx="12" cy="12" r="5" />
+                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
               </svg>
             ) : (
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
               </svg>
             )}
           </button>
@@ -233,7 +242,7 @@ export default function ManagerDashboard() {
               <div style={styles.sidebarHeader}>
                 <h3 style={{ fontSize: 14, fontWeight: 700 }}>Live Employees</h3>
                 <span style={styles.liveIndicator}>
-                  <span className="animate-pulse" style={{ display:'inline-block', width:7, height:7, background:'var(--success)', borderRadius:'50%' }}/>
+                  <span className="animate-pulse" style={{ display: 'inline-block', width: 7, height: 7, background: 'var(--success)', borderRadius: '50%' }} />
                   LIVE
                 </span>
               </div>
@@ -256,6 +265,7 @@ export default function ManagerDashboard() {
                   const live = liveLocations.find(l => l.id === emp.id);
                   const isActive = !!emp.todaySession && emp.todaySession.status === 'active';
                   const hasGps = !!live;
+                  const gapActive = !!emp.gpsGapActive;
                   return (
                     <div key={emp.id} style={{ ...styles.empCard, ...(selectedEmployee?.id === emp.id ? styles.empCardSelected : {}) }}
                       onClick={() => handleSelectEmployee(emp)}>
@@ -264,9 +274,14 @@ export default function ManagerDashboard() {
                         <div style={styles.empName}>{emp.name}</div>
                         <div style={styles.empDept}>{emp.department}</div>
                         {live && <div style={styles.empCoords}>{Number(live.lat || 0).toFixed(4)}, {Number(live.lng || 0).toFixed(4)}</div>}
+                        {gapActive && emp.gpsGapSince && (
+                          <div style={{ fontSize: 9, color: '#ff6b6b', marginTop: 2 }}>
+                            📵 GPS lost since {format(new Date(emp.gpsGapSince), 'HH:mm')}
+                          </div>
+                        )}
                       </div>
-                      <div style={{ ...styles.empStatus, background: isActive ? (hasGps ? 'rgba(46,213,115,0.15)' : 'rgba(255,165,2,0.15)') : 'rgba(136,153,170,0.1)', color: isActive ? (hasGps ? 'var(--success)' : 'var(--warning)') : 'var(--text2)' }}>
-                        {isActive ? (hasGps ? 'Active' : 'No GPS') : 'Off'}
+                      <div style={{ ...styles.empStatus, background: isActive ? (gapActive ? 'rgba(255,107,107,0.15)' : hasGps ? 'rgba(46,213,115,0.15)' : 'rgba(255,165,2,0.15)') : 'rgba(136,153,170,0.1)', color: isActive ? (gapActive ? '#ff6b6b' : hasGps ? 'var(--success)' : 'var(--warning)') : 'var(--text2)' }}>
+                        {isActive ? (gapActive ? 'GPS Lost' : hasGps ? 'Active' : 'No GPS') : 'Off'}
                       </div>
                     </div>
                   );
@@ -296,7 +311,7 @@ export default function ManagerDashboard() {
                       <div style={{ fontFamily: 'var(--font)', minWidth: 180, padding: 4 }}>
                         <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{loc.name}</div>
                         <div style={{ color: 'var(--text2)', fontSize: 12 }}>{loc.department}</div>
-                        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0' }}/>
+                        <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0' }} />
                         <div style={{ fontSize: 12 }}>📍 {parseFloat(loc.lat)?.toFixed(5)}, {parseFloat(loc.lng)?.toFixed(5)}</div>
                         {loc.timestamp && <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 4 }}>Updated: {format(new Date(loc.timestamp), 'HH:mm:ss')}</div>}
                         {loc.speed > 0 && <div style={{ fontSize: 12, marginTop: 4 }}>🚗 {(Number(loc.speed || 0) * 3.6).toFixed(1)} km/h</div>}
@@ -313,10 +328,10 @@ export default function ManagerDashboard() {
                         pathOptions={{ fillColor: '#0088ff', color: '#fff', weight: 1, fillOpacity: 0.8 }}>
                         <Popup>
                           <div style={{ fontSize: 12 }}>
-                            <b>Point {idx + 1} of {routeHistory.length}</b><br/>
-                            📍 {parseFloat(pt.lat)?.toFixed(6)}, {parseFloat(pt.lng)?.toFixed(6)}<br/>
-                            🕐 {format(new Date(pt.timestamp), 'HH:mm:ss')}<br/>
-                            {pt.speed > 0 && <>🚗 {(pt.speed * 3.6).toFixed(1)} km/h<br/></>}
+                            <b>Point {idx + 1} of {routeHistory.length}</b><br />
+                            📍 {parseFloat(pt.lat)?.toFixed(6)}, {parseFloat(pt.lng)?.toFixed(6)}<br />
+                            🕐 {format(new Date(pt.timestamp), 'HH:mm:ss')}<br />
+                            {pt.speed > 0 && <>🚗 {(pt.speed * 3.6).toFixed(1)} km/h<br /></>}
                             {pt.accuracy && <>📐 Accuracy: {parseFloat(pt.accuracy).toFixed(1)}m</>}
                           </div>
                         </Popup>
@@ -331,11 +346,11 @@ export default function ManagerDashboard() {
                       </Marker>
                     )}
                     {routeHistory.length > 1 && (
-                      <Marker position={[routeHistory[routeHistory.length-1].lat, routeHistory[routeHistory.length-1].lng]} icon={L.divIcon({
+                      <Marker position={[routeHistory[routeHistory.length - 1].lat, routeHistory[routeHistory.length - 1].lng]} icon={L.divIcon({
                         html: '<div style="background:#ff6b6b;color:#fff;font-weight:bold;width:24px;height:24px;border-radius:50%;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">E</div>',
                         iconSize: [24, 24], iconAnchor: [12, 12], className: ''
                       })}>
-                        <Popup><b>END</b> - {format(new Date(routeHistory[routeHistory.length-1].timestamp), 'HH:mm:ss')}</Popup>
+                        <Popup><b>END</b> - {format(new Date(routeHistory[routeHistory.length - 1].timestamp), 'HH:mm:ss')}</Popup>
                       </Marker>
                     )}
                   </>
@@ -354,7 +369,7 @@ export default function ManagerDashboard() {
                 <p style={{ color: 'var(--text2)', fontSize: 13, marginTop: 4 }}>{employees.length} employees registered</p>
               </div>
               <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
                 Add Employee
               </button>
             </div>
@@ -372,6 +387,7 @@ export default function ManagerDashboard() {
                     const isActive = emp.todaySession?.status === 'active';
                     const live = liveLocations.find(l => l.id === emp.id);
                     const hasGps = !!live;
+                    const gapActive = !!emp.gpsGapActive;
                     return (
                       <tr key={emp.id} style={{ borderBottom: '1px solid var(--border)' }}>
                         <td style={styles.td}>
@@ -386,10 +402,17 @@ export default function ManagerDashboard() {
                         <td style={styles.td}><span style={{ fontSize: 13 }}>{emp.department || '—'}</span></td>
                         <td style={styles.td}><span style={{ fontSize: 12, fontFamily: 'var(--mono)' }}>{emp.phone || '—'}</span></td>
                         <td style={styles.td}>
-                          <span className={`badge badge-${isActive ? 'active' : 'inactive'}`}>
-                            <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }}/>
-                            {isActive ? (hasGps ? 'Working' : 'Working (No GPS)') : 'Offline'}
-                          </span>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                            <span className={`badge badge-${isActive ? 'active' : 'inactive'}`}>
+                              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
+                              {isActive ? (gapActive ? 'GPS Lost' : hasGps ? 'Working' : 'Working (No GPS)') : 'Offline'}
+                            </span>
+                            {gapActive && emp.gpsGapSince && (
+                              <span style={{ fontSize: 10, color: '#ff6b6b' }}>
+                                📵 Lost since {format(new Date(emp.gpsGapSince), 'HH:mm')}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td style={styles.td}>
                           {live ? (
@@ -606,11 +629,11 @@ export default function ManagerDashboard() {
                     })}>
                       <Popup>Start: {format(new Date(routeHistory[0].timestamp), 'HH:mm:ss')}</Popup>
                     </Marker>
-                    <Marker position={[routeHistory[routeHistory.length-1].lat, routeHistory[routeHistory.length-1].lng]} icon={L.divIcon({
+                    <Marker position={[routeHistory[routeHistory.length - 1].lat, routeHistory[routeHistory.length - 1].lng]} icon={L.divIcon({
                       html: '<div style="background:#ff6b6b;color:#fff;font-weight:bold;width:20px;height:20px;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:10px;box-shadow:0 2px 8px rgba(0,0,0,0.4)">E</div>',
                       iconSize: [20, 20], iconAnchor: [10, 10], className: ''
                     })}>
-                      <Popup>End: {format(new Date(routeHistory[routeHistory.length-1].timestamp), 'HH:mm:ss')}</Popup>
+                      <Popup>End: {format(new Date(routeHistory[routeHistory.length - 1].timestamp), 'HH:mm:ss')}</Popup>
                     </Marker>
                   </MapContainer>
                 </div>
@@ -628,7 +651,7 @@ export default function ManagerDashboard() {
                 <p style={{ color: 'var(--text2)', textAlign: 'center', padding: 40 }}>No notifications yet. Employee check-ins will appear here.</p>
               ) : notifications.map(n => (
                 <div key={n.id} style={styles.notif} className="animate-slide-in">
-                  <div style={{ ...styles.notifDot, background: n.type === 'check_in' ? 'var(--success)' : 'var(--danger)' }} />
+                  <div style={{ ...styles.notifDot, background: n.type === 'check_in' ? 'var(--success)' : n.type === 'gps_lost' ? '#ff6b6b' : n.type === 'gps_resumed' ? 'var(--warning)' : 'var(--danger)' }} />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13 }}>{n.msg}</div>
                   </div>
@@ -730,9 +753,9 @@ const styles = {
   notifTime: { fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)', flexShrink: 0 },
   modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 },
   modal: { width: '100%', maxWidth: 'calc(100vw - 32px)', padding: 20, maxHeight: '90vh', overflow: 'auto' },
-  routesGrid: { 
-    display: 'grid', 
-    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
-    gap: 16 
+  routesGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    gap: 16
   },
 };
