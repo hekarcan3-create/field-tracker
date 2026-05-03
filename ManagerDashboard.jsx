@@ -10,7 +10,47 @@ import { format } from 'date-fns';
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({ iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png', iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png', shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png' });
 
+import { API_BASE_URL } from './api';
+
 const colors = ['#00d4aa', '#0088ff', '#ff6b6b', '#ffa502', '#a55eea', '#ff9ff3', '#00cec9'];
+
+// ─── Utilities ──────────────────────────────────────────────────────
+const calculateDistance = (lat1, lng1, lat2, lng2) => {
+  const R = 6371e3;
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) *
+    Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const calculateRouteDistance = (points) => {
+  if (points.length < 2) return 0;
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += calculateDistance(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng);
+  }
+  return total / 1000;
+};
+
+const calculateRouteDuration = (points) => {
+  if (points.length < 2) return '0:00';
+  const start = new Date(points[0].timestamp);
+  const end = new Date(points[points.length - 1].timestamp);
+  const diff = end - start;
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+
+const calculateAvgSpeed = (points) => {
+  const speeds = points.filter(p => p.speed > 0).map(p => p.speed * 3.6);
+  return speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
+};
 
 const makeIcon = (color, label) => L.divIcon({
   html: `<div style="background:${color};color:#000;font-weight:700;font-size:10px;width:28px;height:28px;border-radius:50%;border:3px solid #fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.4)">${label}</div>`,
@@ -46,7 +86,7 @@ export default function ManagerDashboard() {
     loadData();
 
     // FIX: Use relative URL (goes through vite proxy) instead of hardcoded IP
-    socketRef.current = io();
+    socketRef.current = io(API_BASE_URL);
     socketRef.current.on('location_update', (data) => {
       setLiveLocations(prev => {
         const idx = prev.findIndex(l => l.id === data.userId);
@@ -105,42 +145,6 @@ export default function ManagerDashboard() {
     }
   };
 
-  const calculateRouteDistance = (points) => {
-    if (points.length < 2) return 0;
-    let total = 0;
-    for (let i = 1; i < points.length; i++) {
-      total += calculateDistance(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng);
-    }
-    return total / 1000;
-  };
-
-  const calculateDistance = (lat1, lng1, lat2, lng2) => {
-    const R = 6371e3;
-    const φ1 = lat1 * Math.PI/180;
-    const φ2 = lat2 * Math.PI/180;
-    const Δφ = (lat2-lat1) * Math.PI/180;
-    const Δλ = (lng2-lng1) * Math.PI/180;
-    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-              Math.cos(φ1) * Math.cos(φ2) *
-              Math.sin(Δλ/2) * Math.sin(Δλ/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-  };
-
-  const calculateRouteDuration = (points) => {
-    if (points.length < 2) return '0:00';
-    const start = new Date(points[0].timestamp);
-    const end = new Date(points[points.length-1].timestamp);
-    const diff = end - start;
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
-  };
-
-  const calculateAvgSpeed = (points) => {
-    const speeds = points.filter(p => p.speed > 0).map(p => p.speed * 3.6);
-    return speeds.length > 0 ? speeds.reduce((a, b) => a + b, 0) / speeds.length : 0;
-  };
 
   // FIX: unified route loading with loading state
   const loadRouteHistory = async (empId, date) => {

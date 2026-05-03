@@ -1,0 +1,17 @@
+{
+  "short_name": "Field Tracker",
+  "name": "Avail Co. Field Tracker",
+  "description": "Real-time GPS tracking for field employees",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0a0e1a",
+  "background_color": "#0a0e1a"
+}

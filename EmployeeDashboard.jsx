@@ -24,6 +24,20 @@ function MapCenter({ pos }) {
 // Duhok/Zakho center coordinates
 const DEFAULT_CENTER = [37.0, 42.8];
 
+// Utility: Haversine formula to calculate distance between two points in metres
+const calculateDistance = (lat1, lng1, lat2, lng2) => {
+  const R = 6371e3;
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+    Math.cos(φ1) * Math.cos(φ2) *
+    Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
 export default function EmployeeDashboard() {
   const navigate = useNavigate();
   const { user, logout, theme, toggleTheme } = useAuth();
@@ -347,7 +361,7 @@ export default function EmployeeDashboard() {
         timeout: 30000 
       }
     );
-  }, [calculateDistance, tracking]);
+  }, [tracking]);
 
   const startWatchdog = (sessionId) => {
     if (watchdogId.current) clearInterval(watchdogId.current);
@@ -380,18 +394,6 @@ export default function EmployeeDashboard() {
     }
   };
 
-  const calculateDistance = (lat1, lng1, lat2, lng2) => {
-    const R = 6371e3;
-    const φ1 = lat1 * Math.PI/180;
-    const φ2 = lat2 * Math.PI/180;
-    const Δφ = (lat2-lat1) * Math.PI/180;
-    const Δλ = (lng2-lng1) * Math.PI/180;
-    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
-              Math.cos(φ1) * Math.cos(φ2) *
-              Math.sin(Δλ/2) * Math.sin(Δλ/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-  };
 
   const handleStartDay = async () => {
     // First check/request GPS permission before starting session
