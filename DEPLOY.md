@@ -114,9 +114,21 @@ Both Railway and Vercel provide free SSL certificates automatically.
 2. Update DNS records (CNAME or A record)
 3. Update CORS in server/index.js with your custom domain
 
-## Need Help?
+## 📱 Mobile Optimization (CRITICAL)
 
-If you get stuck, check:
-- Railway docs: https://docs.railway.app
-- Vercel docs: https://vercel.com/docs
-- PostgreSQL connection troubleshooting
+To ensure consistent GPS tracking in the background (especially when the screen is off), employees MUST follow these steps on their phones:
+
+### For Android:
+1.  **Battery Optimization**: Long press the browser icon (Chrome) -> App Info -> Battery -> **Set to "Unrestricted"**.
+2.  **Location Permission**: Go to App Info -> Permissions -> Location -> **Set to "Allow all the time"** (if available) or ensure "Use precise location" is ON.
+3.  **PWA Installation**: Open the site in Chrome -> click 3 dots -> **"Install App"**. The installed version has better background priority than a browser tab.
+
+### For iPhone (iOS):
+1.  **Always On**: Employees should keep the browser tab open.
+2.  **Add to Home Screen**: Open the site in Safari -> click Share button -> **"Add to Home Screen"**. Use the Home Screen version for work.
+3.  **Background App Refresh**: Ensure this is ON in iOS Settings for the browser.
+
+---
+
+## Need Help?
+...

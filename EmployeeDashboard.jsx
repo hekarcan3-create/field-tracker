@@ -37,8 +37,11 @@ export default function EmployeeDashboard() {
   const [tab, setTab] = useState('map');
   const watchId = useRef(null);
   const timerRef = useRef(null);
+  const watchdogId = useRef(null);
+  const lastUpdateRef = useRef(Date.now());
   const wakeLock = useRef(null);
   const audioContextRef = useRef(null);
+  const audioSourceRef = useRef(null);
 
   // Silent Heartbeat for iOS/Android background persistence
   const startHeartbeat = () => {
@@ -51,10 +54,9 @@ export default function EmployeeDashboard() {
       }
       
       const ctx = audioContextRef.current;
-      // If suspended (common in browsers), resume it
       if (ctx.state === 'suspended') ctx.resume();
 
-      // Resilience: Auto-resume if OS suspends it (like during a call)
+      // Resilience: Auto-resume if OS suspends it
       ctx.onstatechange = () => {
         if (ctx.state === 'suspended' && tracking) {
           ctx.resume().catch(() => {});
@@ -68,18 +70,50 @@ export default function EmployeeDashboard() {
       source.loop = true;
       source.connect(ctx.destination);
       source.start();
-      console.log('🔊 Call-proof heartbeat active');
+      audioSourceRef.current = source;
+
+      // MediaSession API - Critical for keeping process alive on iOS/Android
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'Field Tracking Active',
+          artist: 'Avail Co.',
+          album: 'Tracking System',
+          artwork: [
+            { src: '/icon.png', sizes: '512x512', type: 'image/png' }
+          ]
+        });
+        
+        // Handle playback state to satisfy OS
+        navigator.mediaSession.playbackState = 'playing';
+        
+        // Add dummy handlers to prevent OS from stopping playback
+        navigator.mediaSession.setActionHandler('play', () => {
+          if (audioContextRef.current?.state === 'suspended') audioContextRef.current.resume();
+        });
+        navigator.mediaSession.setActionHandler('pause', () => {
+          // We don't really want to pause tracking, but we acknowledge the OS request
+          console.log('OS requested pause - maintaining heartbeat');
+        });
+      }
+
+      console.log('🔊 Call-proof heartbeat active with MediaSession');
     } catch (e) {
       console.error('Heartbeat failed:', e);
     }
   };
 
   const stopHeartbeat = () => {
+    if (audioSourceRef.current) {
+      try { audioSourceRef.current.stop(); } catch {}
+      audioSourceRef.current = null;
+    }
     if (audioContextRef.current) {
-      // Remove listener before closing
       audioContextRef.current.onstatechange = null;
       audioContextRef.current.close();
       audioContextRef.current = null;
+    }
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'none';
     }
   };
 
@@ -154,6 +188,7 @@ export default function EmployeeDashboard() {
     return () => {
       if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
       if (timerRef.current) clearInterval(timerRef.current);
+      if (watchdogId.current) clearInterval(watchdogId.current);
     };
   }, []);
 
@@ -174,6 +209,7 @@ export default function EmployeeDashboard() {
         const hasPermission = await checkAndRequestPermission();
         if (hasPermission) {
           startGPS(res.data.session.id);
+          startWatchdog(res.data.session.id);
           requestWakeLock();
           startHeartbeat();
         }
@@ -249,6 +285,7 @@ export default function EmployeeDashboard() {
     watchId.current = navigator.geolocation.watchPosition(
       async (pos) => {
         const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
+        lastUpdateRef.current = Date.now();
 
         // Only record if moved at least MIN_DISTANCE metres
         if (lastPos) {
@@ -310,7 +347,29 @@ export default function EmployeeDashboard() {
         timeout: 30000 
       }
     );
-  }, []);
+  }, [calculateDistance, tracking]);
+
+  const startWatchdog = (sessionId) => {
+    if (watchdogId.current) clearInterval(watchdogId.current);
+    
+    // Check every 2 minutes if we got an update
+    watchdogId.current = setInterval(() => {
+      const timeSinceLast = Date.now() - lastUpdateRef.current;
+      
+      // If no update for 3 minutes, force a position check to wake up the sensor
+      if (timeSinceLast > 180000 && tracking) {
+        console.log('🐕 GPS Watchdog: No updates for 3 mins, waking up sensor...');
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            console.log('🐕 Watchdog: Sensor woke up!', pos.coords.latitude, pos.coords.longitude);
+            // This might trigger a fresh update in the watchPosition as well
+          },
+          (err) => console.warn('🐕 Watchdog wake up failed:', err.message),
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      }
+    }, 120000);
+  };
 
   const retryGPS = async () => {
     if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
@@ -357,6 +416,7 @@ export default function EmployeeDashboard() {
       // Only start GPS watch if permission was granted
       if (hasPermission) {
         startGPS(res.data.session.id);
+        startWatchdog(res.data.session.id);
         requestWakeLock();
         startHeartbeat();
       }
@@ -375,6 +435,7 @@ export default function EmployeeDashboard() {
       await axios.post('/api/session/end');
       if (watchId.current) navigator.geolocation.clearWatch(watchId.current);
       if (timerRef.current) clearInterval(timerRef.current);
+      if (watchdogId.current) clearInterval(watchdogId.current);
       releaseWakeLock();
       stopHeartbeat();
       setTracking(false);

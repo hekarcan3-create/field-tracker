@@ -63,10 +63,6 @@ export default function ManagerDashboard() {
       addNotification(`${data.name} ended their work day`, 'check_out');
       loadData();
     });
-    socketRef.current.on('location_update', (data) => {
-      // Real-time location update - refresh live locations
-      loadLive();
-    });
 
     // Refresh live locations every 15 seconds
     const interval = setInterval(loadLive, 15000);
@@ -263,7 +259,7 @@ export default function ManagerDashboard() {
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={styles.empName}>{emp.name}</div>
                         <div style={styles.empDept}>{emp.department}</div>
-                        {live && <div style={styles.empCoords}>{parseFloat(live.lat)?.toFixed(4)}, {parseFloat(live.lng)?.toFixed(4)}</div>}
+                        {live && <div style={styles.empCoords}>{Number(live.lat || 0).toFixed(4)}, {Number(live.lng || 0).toFixed(4)}</div>}
                       </div>
                       <div style={{ ...styles.empStatus, background: isActive ? (hasGps ? 'rgba(46,213,115,0.15)' : 'rgba(255,165,2,0.15)') : 'rgba(136,153,170,0.1)', color: isActive ? (hasGps ? 'var(--success)' : 'var(--warning)') : 'var(--text2)' }}>
                         {isActive ? (hasGps ? 'Active' : 'No GPS') : 'Off'}
@@ -299,7 +295,7 @@ export default function ManagerDashboard() {
                         <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '8px 0' }}/>
                         <div style={{ fontSize: 12 }}>📍 {parseFloat(loc.lat)?.toFixed(5)}, {parseFloat(loc.lng)?.toFixed(5)}</div>
                         {loc.timestamp && <div style={{ fontSize: 11, color: 'var(--text2)', marginTop: 4 }}>Updated: {format(new Date(loc.timestamp), 'HH:mm:ss')}</div>}
-                        {loc.speed > 0 && <div style={{ fontSize: 12, marginTop: 4 }}>🚗 {(loc.speed * 3.6).toFixed(1)} km/h</div>}
+                        {loc.speed > 0 && <div style={{ fontSize: 12, marginTop: 4 }}>🚗 {(Number(loc.speed || 0) * 3.6).toFixed(1)} km/h</div>}
                       </div>
                     </Popup>
                   </Marker>
@@ -546,7 +542,7 @@ export default function ManagerDashboard() {
               </div>
             )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: routeHistory.length > 0 ? '1fr 1fr' : '1fr', gap: 16 }}>
+            <div style={styles.routesGrid}>
               <div className="card" style={{ maxHeight: 500, overflow: 'auto' }}>
                 <h3 style={{ fontSize: 14, fontWeight: 700, padding: 16, borderBottom: '1px solid var(--border)' }}>
                   📍 Tracking Timeline {routeHistory.length > 0 && `(${routeHistory.length} points)`}
@@ -730,4 +726,9 @@ const styles = {
   notifTime: { fontSize: 10, color: 'var(--text2)', fontFamily: 'var(--mono)', flexShrink: 0 },
   modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 },
   modal: { width: '100%', maxWidth: 'calc(100vw - 32px)', padding: 20, maxHeight: '90vh', overflow: 'auto' },
+  routesGrid: { 
+    display: 'grid', 
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
+    gap: 16 
+  },
 };
