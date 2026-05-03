@@ -47,6 +47,7 @@ export default function EmployeeDashboard() {
   const [currentPos, setCurrentPos] = useState(null);
   const [elapsed, setElapsed] = useState('00:00:00');
   const [status, setStatus] = useState('idle');
+  const [heartbeatActive, setHeartbeatActive] = useState(false);
   const [activityLog, setActivityLog] = useState([]);
   const [tab, setTab] = useState('map');
   const watchId = useRef(null);
@@ -137,15 +138,15 @@ export default function EmployeeDashboard() {
       }
 
       console.log('Heartbeat engine active');
+      setHeartbeatActive(true);
 
-      // Secondary backup: Periodically check if context was suspended
-      if (watchdogId.current) clearInterval(watchdogId.current);
-      watchdogId.current = setInterval(() => {
-        if (tracking && audioContextRef.current?.state === 'suspended') {
-          console.log('Watchdog: Resuming suspended AudioContext');
-          audioContextRef.current.resume().catch(() => { });
-        }
-      }, 15000);
+      if (audioTagRef.current) {
+        audioTagRef.current.onended = () => {
+          if (tracking) {
+            audioTagRef.current.play().catch(() => {});
+          }
+        };
+      }
     } catch (e) {
       console.error('Heartbeat failed:', e);
     }
@@ -372,7 +373,8 @@ export default function EmployeeDashboard() {
           startWatchdog(res.data.session.id);
           startSecondaryPoll(res.data.session.id);
           requestWakeLock();
-          startHeartbeat();
+          // NOTE: We do NOT call startHeartbeat() here because iOS blocks it without a user click.
+          // The user will see a "Enable Background Tracking" button to start it manually.
         }
       }
     } catch (err) {
@@ -646,6 +648,7 @@ export default function EmployeeDashboard() {
         audioTagRef.current.currentTime = 0;
       }
       if (swRef.current?.active) swRef.current.active.postMessage({ type: 'STOP_HEARTBEAT' });
+      setHeartbeatActive(false);
       setTracking(false);
       setSession(null);
       setStatus('idle');
@@ -736,6 +739,12 @@ export default function EmployeeDashboard() {
                 </span>
               </div>
             )}
+            {tracking && heartbeatActive && (
+              <div style={styles.heartbeatBadge}>
+                <div className="animate-ping" style={styles.heartbeatPing} />
+                <span>Engine Active</span>
+              </div>
+            )}
             {!tracking ? (
               <button className="btn btn-primary btn-lg" onClick={handleStartDay}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -753,6 +762,23 @@ export default function EmployeeDashboard() {
             )}
           </div>
         </div>
+
+        {/* iOS Resume Engine Call-to-Action */}
+        {tracking && !heartbeatActive && (
+          <div style={styles.resumeBanner}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 700, fontSize: 15, color: '#fff', marginBottom: 4 }}>
+                ⚠️ Background Tracking Paused
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.8)' }}>
+                iOS requires a manual tap to enable background tracking.
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={startHeartbeat} style={{ background: '#fff', color: '#ff4757', fontWeight: 700 }}>
+              Enable Now
+            </button>
+          </div>
+        )}
 
         {/* GPS denied / error banner */}
         {tracking && (status === 'denied' || status === 'unavailable' || status === 'timeout' || status === 'unsupported') && (
@@ -955,4 +981,7 @@ const styles = {
   activityMsg: { fontSize: 12, color: 'var(--text2)', wordBreak: 'break-word' },
   empty: { color: 'var(--text2)', fontSize: 12, textAlign: 'center', padding: '30px 0' },
   guideBox: { background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 10, padding: '12px 14px' },
+  resumeBanner: { background: 'linear-gradient(135deg, #ff4757, #ff6b81)', borderRadius: 12, padding: '16px', display: 'flex', alignItems: 'center', gap: 16, marginBottom: 12, boxShadow: '0 4px 15px rgba(255,71,87,0.3)' },
+  heartbeatBadge: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px', background: 'rgba(0,212,170,0.1)', borderRadius: 20, color: 'var(--success)', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', border: '1px solid rgba(0,212,170,0.2)' },
+  heartbeatPing: { width: 6, height: 6, borderRadius: '50%', background: 'var(--success)' },
 };
