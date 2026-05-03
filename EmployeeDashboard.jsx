@@ -115,12 +115,25 @@ export default function EmployeeDashboard() {
       }
 
       console.log('🔊 Call-proof heartbeat active with MediaSession');
+      
+      // Secondary backup: Periodically check if context was suspended
+      if (watchdogId.current) clearInterval(watchdogId.current);
+      watchdogId.current = setInterval(() => {
+        if (tracking && audioContextRef.current?.state === 'suspended') {
+          console.log('🔄 Watchdog: Resuming suspended AudioContext');
+          audioContextRef.current.resume().catch(() => {});
+        }
+      }, 15000);
     } catch (e) {
       console.error('Heartbeat failed:', e);
     }
   };
 
   const stopHeartbeat = () => {
+    if (watchdogId.current) {
+      clearInterval(watchdogId.current);
+      watchdogId.current = null;
+    }
     if (audioSourceRef.current) {
       try { audioSourceRef.current.stop(); } catch { }
       audioSourceRef.current = null;
@@ -165,6 +178,11 @@ export default function EmployeeDashboard() {
         console.log('🔄 App returned to foreground — refreshing tracking...');
         await requestWakeLock();
         startHeartbeat();
+
+        // Nudge the Service Worker to stay alive
+        if (swRef.current?.active) {
+          swRef.current.active.postMessage({ type: 'START_HEARTBEAT' });
+        }
 
         // Immediately get a fresh fix — don't wait for watchPosition to wake up
         const sid = sessionIdRef.current;
@@ -230,19 +248,18 @@ export default function EmployeeDashboard() {
     // We respond by getting a fresh GPS fix and POSTing it to the server.
     const handleSWMessage = async (event) => {
       if (event.data?.type !== 'SW_GET_LOCATION') return;
+      
+      // If we are in the background, this message is a lifeline.
+      // We must be quick before the OS suspends us again.
       const sid = sessionIdRef.current;
       if (!sid) return;
+
+      console.log('🛰️ SW heartbeat received, getting location...');
 
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
           const { latitude: lat, longitude: lng, accuracy, speed, heading } = pos.coords;
           lastUpdateRef.current = Date.now();
-
-          if (gapStartRef.current) {
-            const gapSec = Math.round((Date.now() - gapStartRef.current) / 1000);
-            gapStartRef.current = null;
-            try { await axios.post('/api/location/gap', { session_id: sid, gap_type: 'resumed', duration_seconds: gapSec }); } catch { }
-          }
 
           setCurrentPos([lat, lng]);
           setPositions(prev => [...prev, [lat, lng]]);
@@ -252,13 +269,24 @@ export default function EmployeeDashboard() {
           } catch { }
         },
         (err) => console.warn('SW-triggered GPS fail:', err.message),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
       );
     };
 
     navigator.serviceWorker.addEventListener('message', handleSWMessage);
-    return () => navigator.serviceWorker.removeEventListener('message', handleSWMessage);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    
+    // Periodically ping the SW to keep it alive
+    const swPingId = setInterval(() => {
+      if (tracking && swRef.current?.active) {
+        swRef.current.active.postMessage({ type: 'START_HEARTBEAT' });
+      }
+    }, 60000);
+
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+      clearInterval(swPingId);
+    };
+  }, [tracking]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check permission state and request if needed
   const checkAndRequestPermission = async () => {
@@ -271,7 +299,10 @@ export default function EmployeeDashboard() {
     return new Promise((resolve) => {
       navigator.geolocation.getCurrentPosition(
         () => {
-          // Permission granted - now start watching
+          // Permission granted - also check notifications
+          if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+          }
           resolve(true);
         },
         (err) => {
@@ -762,7 +793,9 @@ export default function EmployeeDashboard() {
               <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
                 <li>Keep this tab open in your browser.</li>
                 <li>Do not force-close the browser app.</li>
-                <li>On Android: Set battery usage to <b>"Unrestricted"</b> for your browser.</li>
+                <li><b>Android:</b> Long-press browser icon → (i) App Info → Battery → Set to <b>"Unrestricted"</b>.</li>
+                <li><b>iOS:</b> Disable <b>"Low Power Mode"</b> and keep browser in foreground if possible.</li>
+                <li><b>PWA:</b> Open the app from the home screen shortcut for better reliability.</li>
               </ul>
             </div>
           </div>
