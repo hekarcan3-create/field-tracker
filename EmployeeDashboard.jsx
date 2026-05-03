@@ -62,6 +62,7 @@ export default function EmployeeDashboard() {
   const gapStartRef = useRef(null);     // Timestamp when GPS went silent (for gap reporting)
   const sessionIdRef = useRef(null);    // Keep session id accessible inside SW message callbacks
   const audioTagRef = useRef(null);     // Physical <audio> tag for better iOS persistence
+  const videoRef = useRef(null);        // Hidden video for PiP persistence
 
   // Silent Heartbeat for iOS/Android background persistence
   const startHeartbeat = () => {
@@ -139,6 +140,15 @@ export default function EmployeeDashboard() {
 
       console.log('Heartbeat engine active');
       setHeartbeatActive(true);
+
+      // Trigger Picture-in-Picture if supported (The "Golden Rule" for iOS persistence)
+      if (videoRef.current && videoRef.current.requestPictureInPicture) {
+        videoRef.current.play().then(() => {
+          videoRef.current.requestPictureInPicture().catch(err => {
+            console.warn('PiP request failed:', err);
+          });
+        }).catch(() => {});
+      }
 
       if (audioTagRef.current) {
         audioTagRef.current.onended = () => {
@@ -959,6 +969,14 @@ export default function EmployeeDashboard() {
         muted={false}
         style={{ display: 'none' }}
         src="data:audio/wav;base64,UklGRmYAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhIAAAAP7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v4="
+      />
+      <video
+        ref={videoRef}
+        loop
+        muted
+        playsInline
+        style={{ position: 'fixed', bottom: 0, right: 0, width: 1, height: 1, opacity: 0.01, pointerEvents: 'none' }}
+        src="https://www.w3schools.com/html/mov_bbb.mp4"
       />
     </div>
   );
