@@ -60,68 +60,64 @@ export default function EmployeeDashboard() {
   const pollIntervalRef = useRef(null); // Secondary GPS poll (fallback when watchPosition dies in bg)
   const gapStartRef = useRef(null);     // Timestamp when GPS went silent (for gap reporting)
   const sessionIdRef = useRef(null);    // Keep session id accessible inside SW message callbacks
+  const audioTagRef = useRef(null);     // Physical <audio> tag for better iOS persistence
 
   // Silent Heartbeat for iOS/Android background persistence
   const startHeartbeat = () => {
     try {
+      // 1. AudioContext Heartbeat (Redundancy)
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextClass) return;
-
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContextClass();
+      if (AudioContextClass) {
+        if (!audioContextRef.current) audioContextRef.current = new AudioContextClass();
+        const ctx = audioContextRef.current;
+        if (ctx.state === 'suspended') ctx.resume();
+        const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        source.connect(ctx.destination);
+        source.start();
+        audioSourceRef.current = source;
       }
 
-      const ctx = audioContextRef.current;
-      if (ctx.state === 'suspended') ctx.resume();
+      // 2. Physical Audio Tag (Crucial for iOS)
+      if (audioTagRef.current) {
+        audioTagRef.current.play().catch(err => console.warn('Audio tag play failed:', err));
+      }
 
-      // Resilience: Auto-resume if OS suspends it
-      ctx.onstatechange = () => {
-        if (ctx.state === 'suspended' && tracking) {
-          ctx.resume().catch(() => { });
-        }
-      };
-
-      // Create a 1-second silent buffer
-      const buffer = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.loop = true;
-      source.connect(ctx.destination);
-      source.start();
-      audioSourceRef.current = source;
-
-      // MediaSession API - Critical for keeping process alive on iOS/Android
+      // 3. MediaSession API - Critical for keeping process alive on iOS/Android
       if ('mediaSession' in navigator) {
         navigator.mediaSession.metadata = new MediaMetadata({
-          title: 'Field Tracking Active',
-          artist: 'Avail Co.',
-          album: 'Tracking System',
-          artwork: [
-            { src: '/icon.png', sizes: '512x512', type: 'image/png' }
-          ]
+          title: 'Location Tracking Active',
+          artist: 'Avail Co. Field System',
+          album: 'Background Engine',
+          artwork: [{ src: '/icon.png', sizes: '512x512', type: 'image/png' }]
         });
 
-        // Handle playback state to satisfy OS
         navigator.mediaSession.playbackState = 'playing';
 
-        // Add dummy handlers to prevent OS from stopping playback
-        navigator.mediaSession.setActionHandler('play', () => {
+        // Dummy handlers to satisfy OS requirements
+        const resumeAudio = () => {
           if (audioContextRef.current?.state === 'suspended') audioContextRef.current.resume();
-        });
+          if (audioTagRef.current) audioTagRef.current.play().catch(() => { });
+        };
+
+        navigator.mediaSession.setActionHandler('play', resumeAudio);
         navigator.mediaSession.setActionHandler('pause', () => {
-          // We don't really want to pause tracking, but we acknowledge the OS request
           console.log('OS requested pause - maintaining heartbeat');
+          navigator.mediaSession.playbackState = 'playing';
+          resumeAudio();
         });
       }
 
-      console.log('🔊 Call-proof heartbeat active with MediaSession');
-      
+      console.log('Heartbeat engine active');
+
       // Secondary backup: Periodically check if context was suspended
       if (watchdogId.current) clearInterval(watchdogId.current);
       watchdogId.current = setInterval(() => {
         if (tracking && audioContextRef.current?.state === 'suspended') {
-          console.log('🔄 Watchdog: Resuming suspended AudioContext');
-          audioContextRef.current.resume().catch(() => {});
+          console.log('Watchdog: Resuming suspended AudioContext');
+          audioContextRef.current.resume().catch(() => { });
         }
       }, 15000);
     } catch (e) {
@@ -618,8 +614,10 @@ export default function EmployeeDashboard() {
       if (watchdogId.current) clearInterval(watchdogId.current);
       if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
       gapStartRef.current = null;
-      releaseWakeLock();
-      stopHeartbeat();
+      if (audioTagRef.current) {
+        audioTagRef.current.pause();
+        audioTagRef.current.currentTime = 0;
+      }
       if (swRef.current?.active) swRef.current.active.postMessage({ type: 'STOP_HEARTBEAT' });
       setTracking(false);
       setSession(null);
@@ -879,6 +877,14 @@ export default function EmployeeDashboard() {
           </div>
         )}
       </div>
+      <audio
+        ref={audioTagRef}
+        loop
+        playsInline
+        muted={false}
+        style={{ display: 'none' }}
+        src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
+      />
     </div>
   );
 }
