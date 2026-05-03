@@ -142,11 +142,33 @@ export default function EmployeeDashboard() {
 
       if (audioTagRef.current) {
         audioTagRef.current.onended = () => {
-          if (tracking) {
-            audioTagRef.current.play().catch(() => {});
-          }
+          if (tracking) audioTagRef.current.play().catch(() => {});
         };
       }
+
+      // Advanced iOS Nudge: Simulate a live broadcast position to keep process high-priority
+      if (watchdogId.current) clearInterval(watchdogId.current);
+      watchdogId.current = setInterval(() => {
+        if (tracking) {
+          // 1. Update MediaSession position to simulate activity
+          if ('mediaSession' in navigator && 'setPositionState' in navigator.mediaSession) {
+            try {
+              navigator.mediaSession.setPositionState({
+                duration: 3600,
+                playbackRate: 1.0,
+                position: Math.floor((Date.now() % 3600000) / 1000)
+              });
+            } catch { }
+          }
+
+          // 2. GPS "Hammer" - If silent for > 90s, completely kill and restart GPS
+          const timeSinceLast = Date.now() - lastUpdateRef.current;
+          if (timeSinceLast > 90_000) {
+            console.log('GPS Hammer: Resetting hardware watch...');
+            retryGPS();
+          }
+        }
+      }, 30000);
     } catch (e) {
       console.error('Heartbeat failed:', e);
     }
@@ -936,7 +958,7 @@ export default function EmployeeDashboard() {
         playsInline
         muted={false}
         style={{ display: 'none' }}
-        src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
+        src="data:audio/wav;base64,UklGRmYAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhIAAAAP7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v7+/v4="
       />
     </div>
   );
