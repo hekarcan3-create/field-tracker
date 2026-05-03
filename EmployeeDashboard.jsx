@@ -104,10 +104,36 @@ export default function EmployeeDashboard() {
 
         navigator.mediaSession.setActionHandler('play', resumeAudio);
         navigator.mediaSession.setActionHandler('pause', () => {
-          console.log('OS requested pause - maintaining heartbeat');
-          navigator.mediaSession.playbackState = 'playing';
+          console.log('iOS tried to pause - restarting heartbeat');
           resumeAudio();
         });
+
+        // Resilience: Handle physical audio tag events
+        if (audioTagRef.current) {
+          audioTagRef.current.onpause = () => {
+            if (tracking) {
+              console.log('Audio paused by OS - resuming...');
+              audioTagRef.current.play().catch(() => {});
+            }
+          };
+          // Piggyback GPS requests onto the audio heartbeat
+          // This ensures that even if setInterval is throttled, 
+          // the audio thread keeps triggering our location logic.
+          audioTagRef.current.onplay = () => {
+            if (tracking) {
+              const sid = sessionIdRef.current;
+              if (sid) {
+                const stale = Date.now() - lastUpdateRef.current > 40_000;
+                if (stale) {
+                  console.log('Heartbeat trigger: Refreshing GPS');
+                  navigator.geolocation.getCurrentPosition(() => {}, () => {}, { enableHighAccuracy: true });
+                }
+              }
+            }
+          };
+          // Set volume to very low but NOT zero
+          audioTagRef.current.volume = 0.02;
+        }
       }
 
       console.log('Heartbeat engine active');
@@ -615,6 +641,7 @@ export default function EmployeeDashboard() {
       if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
       gapStartRef.current = null;
       if (audioTagRef.current) {
+        audioTagRef.current.onpause = null;
         audioTagRef.current.pause();
         audioTagRef.current.currentTime = 0;
       }
