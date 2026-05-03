@@ -355,8 +355,12 @@ export default function EmployeeDashboard() {
       navigator.geolocation.getCurrentPosition(
         () => {
           // Permission granted - also check notifications
-          if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission();
+          if ('Notification' in window) {
+            Notification.requestPermission().then(perm => {
+              if (perm === 'granted') {
+                console.log('✅ Notification permission granted');
+              }
+            });
           }
           resolve(true);
         },
@@ -544,6 +548,20 @@ export default function EmployeeDashboard() {
             heading: heading || 0,
             session_id: sessionId
           });
+
+          // NEW: Send a local notification to keep the process "visible" to the OS
+          if (Notification.permission === 'granted' && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.ready.then(reg => {
+              reg.showNotification('Avail Co. Tracking', {
+                body: `Last sync: ${format(new Date(), 'HH:mm:ss')} | Signal: Strong`,
+                icon: '/icon.png',
+                tag: 'tracking-status',
+                silent: true,
+                renotify: false
+              });
+            });
+          }
+
           const time = format(new Date(), 'HH:mm:ss');
           setActivityLog(prev => [
             { time, msg: `📍 Location recorded — ${parseFloat(lat).toFixed(5)}, ${parseFloat(lng).toFixed(5)}`, type: 'location' },
@@ -679,7 +697,17 @@ export default function EmployeeDashboard() {
         audioTagRef.current.pause();
         audioTagRef.current.currentTime = 0;
       }
-      if (swRef.current?.active) swRef.current.active.postMessage({ type: 'STOP_HEARTBEAT' });
+      if (swRef.current?.active) {
+        swRef.current.active.postMessage({ type: 'STOP_HEARTBEAT' });
+        // Send a final notification to confirm stop
+        if (Notification.permission === 'granted') {
+          swRef.current.showNotification('Tracking Stopped', {
+            body: 'Your work day session has ended.',
+            icon: '/icon.png',
+            tag: 'tracking-status'
+          });
+        }
+      }
       setHeartbeatActive(false);
       setTracking(false);
       setSession(null);
