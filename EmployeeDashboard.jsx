@@ -540,17 +540,23 @@ export default function EmployeeDashboard() {
         setPositions(prev => [...prev, [lat, lng]]);
         setStatus('active');
 
-        try {
-          await axios.post('/api/location', {
-            lat, lng,
-            accuracy: accuracy || 0,
-            speed: speed || 0,
-            heading: heading || 0,
-            session_id: sessionId
-          });
+        // USE BEACON FOR BACKGROUND (Guaranteed by OS)
+        const payload = JSON.stringify({
+          lat, lng,
+          accuracy: accuracy || 0,
+          speed: speed || 0,
+          heading: heading || 0,
+          session_id: sessionId
+        });
 
-          // NEW: Send a local notification to keep the process "visible" to the OS
-          if (Notification.permission === 'granted' && navigator.serviceWorker.controller) {
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon('/api/location', payload);
+        } else {
+          try { await axios.post('/api/location', JSON.parse(payload)); } catch { }
+        }
+
+        // NEW: Send a local notification to keep the process "visible" to the OS
+        if (Notification.permission === 'granted' && navigator.serviceWorker.controller) {
             navigator.serviceWorker.ready.then(reg => {
               reg.showNotification('Avail Co. Tracking', {
                 body: `Last sync: ${format(new Date(), 'HH:mm:ss')} | Signal: Strong`,
